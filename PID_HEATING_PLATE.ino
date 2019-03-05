@@ -6,17 +6,10 @@
    5% -> 5.3Hz  ->46 (nach 1 minute)
    8% -> 9 hz   -> 166 nach 10min
 
-
-
 */
-
-
-
 
 #include <Wire.h>
 #include <Adafruit_SSD1306.h>
-#define SCLPIN D2
-#define SDAPIN D1
 
 #include <avr/io.h>
 #include <util/delay.h>
@@ -34,8 +27,8 @@ long newPosition = 0;
 #include <max6675.h> //Die MAX6675 Bibliothek
 
 int max6675SO = 4; // Serial Output
-int max6675CS = 6; // Chip Select // changed from 3->6
-int max6675CLK = 5; // Serial Clock
+int max6675CS = 5; // Chip Select // changed from 3->6
+int max6675CLK = 6; // Serial Clock
 
 // Initialisierung der MAX6675 Bibliothek mit
 // den Werten der PINs
@@ -62,7 +55,8 @@ Dimmer dimmer( TRIAC_PIN,  DIMMER_COUNT, 1.5, 50);
 int value = 0;
 
 void setup() {
-  pinMode(TRIAC_PIN, OUTPUT);
+  pinMode(CH_A, INPUT_PULLUP);
+  pinMode(CH_B, INPUT_PULLUP);
   unsigned long BAUDRATE = 9600;
   Serial.begin(BAUDRATE);
   display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
@@ -72,9 +66,9 @@ void setup() {
   display.setCursor(0, 0);
 
   dimmer.begin();
-  t0 = millis();
-  t2 = millis();
-  t4 = millis();
+//  t0 = millis();
+//  t2 = millis();
+//  t4 = millis();
 
   Serial.println("*******************************");
   Serial.println("Log-Time-Step [ms]: ");
@@ -86,31 +80,35 @@ void setup() {
 byte incomingByte = 0;
 
 void loop() {
-  //  t1 = millis();
+  Serial.print(t1);
+  Serial.print("; ");
+  Serial.print(set_temp);
+  Serial.print("; ");
+  Serial.print(ktc.readCelsius());
+  Serial.println("");
+    t1 = millis();
   // send data only when you receive data:
   if (Serial.available() > 0) {
     // read the incoming byte:
     set_temp = Serial.parseInt();
-    Serial.println(set_temp,DEC);
-    
-  }
-  else{
-  dimmer.set(set_temp);
-  
-  display.setCursor(0, 0);
-  display.print("    ");
-  display.setCursor(0, 0);
-  display.print(dimmer.getValue());
-  display.setCursor(0, 10);
-  display.print("        ");
-  display.setCursor(0, 10);
-  display.print(ktc.readCelsius());
-  display.println("C");
+    Serial.println(set_temp, DEC);
 
-  display.display();
-  
   }
   
+    dimmer.set(set_temp);
+
+    display.setCursor(0, 0);
+    display.print("    ");
+    display.setCursor(0, 0);
+    display.print(dimmer.getValue());
+    display.setCursor(0, 10);
+    display.print("        ");
+    display.setCursor(0, 10);
+    display.print(ktc.readCelsius());
+    display.println("C");
+
+    display.display();
+    delay(500);
   //
   //  long newPosition = myEnc.read();
   //  //Serial.println(newPosition);
