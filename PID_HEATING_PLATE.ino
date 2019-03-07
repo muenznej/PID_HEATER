@@ -1,3 +1,22 @@
+#define DEBUG_LEVEL 1
+
+#if DEBUG_LEVEL >= 2
+#define DEBUG_2_PRINT(x) Serial.print(x)
+#define DEBUG_2_PRINTLN(x) Serial.println(x)
+#define DEBUG_PRINT(x)  Serial.print(x)
+#define DEBUG_PRINTLN(x)  Serial.println(x)
+#elif DEBUG_LEVEL >= 1
+#define DEBUG_2_PRINT(x)
+#define DEBUG_2_PRINTLN(x)
+#define DEBUG_PRINT(x)  Serial.print(x)
+#define DEBUG_PRINTLN(x)  Serial.println(x)
+#else
+#define DEBUG_PRINT(x)
+#define DEBUG_PRINTLN(x)
+#define DEBUG_2_PRINT(x)
+#define DEBUG_2_PRINTLN(x)
+#endif
+
 #include <Wire.h>
 #include <Adafruit_SSD1306.h>
 
@@ -28,30 +47,133 @@ byte incomingByte = 0;
 unsigned long tnew = 0;
 unsigned long told_serial = 0;
 unsigned long told_display = 0;
+unsigned long told_PID = 0;
 byte set_temp = 0;
 
 #include <PID_v1.h>
 double Setpoint, Input, Output;
-//#define KU 8
-//#define TU 70
-//double myKp = 9, myKi = 0.0, myKd = 0.000;
-//double myKp = 4.5, myKi = 0.6, myKd = 0.000;
-//double myKp = 0.8*0.6*KU , myKi = 0.80*1.2*KU/TU, myKd = 2.0*3.0*KU*TU/40; // good values, overshoot
-
+// AUTO PID WITH THIS FOLK
+//https://github.com/br3ttb/Arduino-PID-AutoTune-Library/tree/f7ac48217c9f15f9a6d1ceb6281417045bc06a93
 #define KU 4
 #define TU 70
 //double myKp = KU, myKi = 0.0, myKd = 0.000;
-double myKp = 0.6*KU , myKi = 1.2*KU/TU, myKd = 3.0*KU*TU/40; 
+double myKp = 0.6 * KU , myKi = 0.8 * 1.2 * KU / TU, myKd = 1.0 * 3 * KU * TU / 40;
 PID myPID(&Input, &Output, &Setpoint, myKp, myKi, myKd, P_ON_E , DIRECT); // P_ON_M Proportional on Measurement, helps prevent overshoots
 #define MIN_T 0
-#define MAX_T 150
-#define SAMPLETIME 2000
-
+#define MAX_T 170
+#define SAMPLETIME 1000
 /* KU ~ 8-9, T = 70s
    NZ method for PI controler
    KP = 0.45KU
    KI = 0.54/T*KU
 */
+
+void UpdateEncoder() {
+  newPosition = myEnc.read();
+  if ( newPosition != oldPosition ) {
+    if ( newPosition < MIN_T ) {
+      newPosition = 0;
+      myEnc.write(newPosition);
+    }
+    if ( newPosition > MAX_T ) {
+      newPosition = 100;
+      myEnc.write(newPosition);
+    }
+    oldPosition = newPosition;
+    Setpoint = newPosition;
+  }
+}
+void UpdateSerial() {
+  DEBUG_PRINT( ((float)tnew) / 1000 );
+  DEBUG_PRINT("; ");
+  DEBUG_PRINT(Input);
+  DEBUG_PRINT("; ");
+  DEBUG_PRINT(Output);
+  DEBUG_PRINT("; ");
+  DEBUG_PRINT(Setpoint);
+  DEBUG_PRINT("; ");
+  DEBUG_PRINTLN("");
+  told_serial = tnew;
+}
+void UpdateDisplay() {
+  display.setCursor(0, 0);
+  display.print("                    ");
+  display.setCursor(0, 0);
+  display.print("Target T:  ");
+  display.print(Setpoint);
+  display.print("C");
+
+  display.setCursor(0, 10);
+  display.print("                    ");
+  display.setCursor(0, 10);
+  display.print("Current T: ");
+  display.print(ktc.readCelsius());
+  display.println("C");
+  display.display();
+  told_display = tnew;
+
+  display.setCursor(0, 20);
+  display.print("                    ");
+  display.setCursor(0, 20);
+  display.print("Duty Cycle: ");
+  display.print(Output);
+  display.print("%");
+}
+
+long time_stable = 0;
+long first_time_stable = -1;
+
+boolean SetTemperature( int16_t temp, int holdTime = -1, byte TOL = 5) {
+  Setpoint = temp;
+  if (temp < 0) {
+    Setpoint = 0;
+    return true;
+  }
+  if ( abs(Input - temp) <= TOL ) {
+    DEBUG_2_PRINT("stable");
+    if (holdTime < 0) {
+      time_stable = 0;
+      first_time_stable = 0;
+      DEBUG_2_PRINT(" holdtime forever ");
+      DEBUG_2_PRINT(";");
+      return false;// stay on infintily
+
+    }
+    else {
+      time_stable = millis();
+      if (first_time_stable < 0) {
+        first_time_stable = time_stable;
+        DEBUG_2_PRINT(" (first time at): ");
+        DEBUG_2_PRINT(first_time_stable);
+        DEBUG_2_PRINT(";");
+        return false;
+      }
+      else {
+        DEBUG_2_PRINT(" dt: ");
+        DEBUG_2_PRINT(time_stable - first_time_stable);
+        if ( (time_stable - first_time_stable) >= (holdTime * 1000.0) ) {
+          DEBUG_2_PRINT(" done!");
+          first_time_stable = -1;
+          time_stable =  0;
+          DEBUG_2_PRINT(";");
+          return true;
+        }
+        else {
+          DEBUG_2_PRINT(";");
+          return false;
+        }
+      }
+    }
+  }
+  else {
+    DEBUG_2_PRINT("not stable");
+    first_time_stable = -1;
+    time_stable = 0;
+    DEBUG_2_PRINT(";");
+    return false;
+  }
+
+}
 
 void setup() {
   pinMode(CH_A, INPUT_PULLUP);
@@ -65,184 +187,66 @@ void setup() {
   display.setCursor(0, 0);
 
   dimmer.begin();
-
-
   myPID.SetMode(AUTOMATIC);
   myPID.SetOutputLimits(0, 100); // Set  Limits to PWM limits
   myPID.SetSampleTime( SAMPLETIME ); // Set PID sampling time to 10ms
-  Setpoint = 60;
+  Setpoint = 0;
   oldPosition = Setpoint;
   myEnc.write(Setpoint);
 }
-void loop() {
 
+
+int temps []      = { 150, 200, 260, -1 };
+int hold_times [] = { 180, 60, 40, -1};
+#define NUM_ELEM (sizeof( temps ) / sizeof( temps[0] ))
+byte cnt = 0;
+
+void loop() {
   //  if (Serial.available() > 0) {
   //    //set_temp = Serial.parseInt();
   //    Setpoint = Serial.parseInt();
   //    Serial.println(set_temp, DEC);
   //  }
 
-  newPosition = myEnc.read();
-  if ( newPosition != oldPosition ) {
-    if ( newPosition < MIN_T ) {
-      newPosition = 0;
-      myEnc.write(newPosition);
-    }
-    if ( newPosition > MAX_T ) {
-      newPosition = 100;
-      myEnc.write(newPosition);
-    }
-    oldPosition = newPosition;
-    Setpoint = newPosition;
-
-  }
   tnew = millis();
-  if ((tnew - told_serial) >= SAMPLETIME) {
-    //    Input = constrain(ktc.readCelsius(), MIN_T, MAX_T);
-    //    Input = map(Input, MIN_T, MAX_T, 0, 100);
+
+  if ( (tnew - told_PID) >= SAMPLETIME ) {
+    told_PID = tnew;
+    if (Setpoint >= MAX_T) {
+      Setpoint = MAX_T;
+    }
+    if (Setpoint <= MIN_T) {
+      Setpoint = MIN_T;
+    }
     Input = ktc.readCelsius();
     myPID.Compute();
-    set_temp = Output;
-    Serial.print( ((float)tnew) / 1000 );
-    Serial.print("; ");
-    Serial.print(Input);
-    Serial.print("; ");
-    Serial.print(Output);
-    Serial.print("; ");
-    Serial.print(Setpoint);
-    Serial.print("; ");
-    Serial.println("");
-    //   SerialReceive();
-    //   SerialSend();
-    told_serial = tnew;
+
+    if ( SetTemperature(temps[cnt], hold_times[cnt]) ) {
+      Serial.print("Step ");
+      Serial.print(cnt);
+      Serial.println(" reached");
+      if (cnt >= (NUM_ELEM - 1)) {
+        Serial.println(" Profile Finished, turning off!");
+        Setpoint = 0;
+        cnt = (NUM_ELEM - 1);
+      } else {
+        cnt++;
+      }
+    }
+  }
+
+  UpdateEncoder();
+
+  if ((tnew - told_serial) >= 1000) {
+    UpdateSerial();
   }
 
   if ((tnew - told_display) >= 500) {
-    display.setCursor(0, 0);
-    display.print("                    ");
-    display.setCursor(0, 0);
-    display.print("Target T:  ");
-    display.print(Setpoint);
-    display.print("C");
-
-    display.setCursor(0, 10);
-    display.print("                    ");
-    display.setCursor(0, 10);
-    display.print("Current T: ");
-    display.print(ktc.readCelsius());
-    display.println("C");
-    display.display();
-    told_display = tnew;
-
-    display.setCursor(0, 20);
-    display.print("                    ");
-    display.setCursor(0, 20);
-    display.print("Duty Cycle: ");
-    display.print(dimmer.getValue());
-    display.print("%");
-
-
+    UpdateDisplay();
   }
 
-  //_delay_ms(5);
 
-  dimmer.set(set_temp);
-
+  dimmer.set(Output);
 }
-//
-//
-//union {                // This Data structure lets
-//  byte asBytes[24];    // us take the byte array
-//  float asFloat[6];    // sent from processing and
-//}                      // easily convert it to a
-//foo;                   // float array
-//
-//// getting float values from processing into the arduino
-//// was no small task.  the way this program does it is
-//// as follows:
-////  * a float takes up 4 bytes.  in processing, convert
-////    the array of floats we want to send, into an array
-////    of bytes.
-////  * send the bytes to the arduino
-////  * use a data structure known as a union to convert
-////    the array of bytes back into an array of floats
-//
-////  the bytes coming from the arduino follow the following
-////  format:
-////  0: 0=Manual, 1=Auto, else = ? error ?
-////  1: 0=Direct, 1=Reverse, else = ? error ?
-////  2-5: float setpoint
-////  6-9: float input
-////  10-13: float output
-////  14-17: float P_Param
-////  18-21: float I_Param
-////  22-245: float D_Param
-//void SerialReceive()
-//{
-//
-//  // read the bytes sent from Processing
-//  int index = 0;
-//  byte Auto_Man = -1;
-//  byte Direct_Reverse = -1;
-//  while (Serial.available() && index < 26)
-//  {
-//    if (index == 0) Auto_Man = Serial.read();
-//    else if (index == 1) Direct_Reverse = Serial.read();
-//    else foo.asBytes[index - 2] = Serial.read();
-//    index++;
-//  }
-//
-//  // if the information we got was in the correct format,
-//  // read it into the system
-//  if (index == 26  && (Auto_Man == 0 || Auto_Man == 1) && (Direct_Reverse == 0 || Direct_Reverse == 1))
-//  {
-//    Setpoint = double(foo.asFloat[0]);
-//    Input = double(foo.asFloat[1]);     // * the user has the ability to send the
-//    //   value of "Input"  in most cases (as
-//    //   in this one) this is not needed.
-//    if (Auto_Man == 0)                    // * only change the output if we are in
-//    { //   manual mode.  otherwise we'll get an
-//      Output = double(foo.asFloat[2]);    //   output blip, then the controller will
-//    }                                     //   overwrite.
-//
-//    double p, i, d;                       // * read in and set the controller tunings
-//    p = double(foo.asFloat[3]);           //
-//    i = double(foo.asFloat[4]);           //
-//    d = double(foo.asFloat[5]);           //
-//    myPID.SetTunings(p, i, d);        //
-//
-//    if (Auto_Man == 0) myPID.SetMode(MANUAL); // * set the controller mode
-//    else myPID.SetMode(AUTOMATIC);             //
-//    //else myPID.SetMode(MANUAL);             //
-//    if (Direct_Reverse == 0) myPID.SetControllerDirection(DIRECT); // * set the controller Direction
-//    else myPID.SetControllerDirection(REVERSE);          //
-//  }
-//  Serial.flush();                         // * clear any random data from the serial buffer
-//}
-//
-//// unlike our tiny microprocessor, the processing ap
-//// has no problem converting strings into floats, so
-//// we can just send strings.  much easier than getting
-//// floats from processing to here no?
-//void SerialSend()
-//{
-//  Serial.print("PID ");
-//  Serial.print(Setpoint);
-//  Serial.print(" ");
-//  Serial.print(Input);
-//  Serial.print(" ");
-//  Serial.print(Output);
-//  Serial.print(" ");
-//  Serial.print(myPID.GetKp());
-//  Serial.print(" ");
-//  Serial.print(myPID.GetKi() );
-//  Serial.print(" ");
-//  Serial.print(myPID.GetKd());
-//  Serial.print(" ");
-//  if (myPID.GetMode() == AUTOMATIC) Serial.print("Automatic");
-//  else Serial.print("Manual");
-//  Serial.print(" ");
-//  if (myPID.GetDirection() == DIRECT) Serial.println("Direct");
-//  else Serial.println("Reverse");
-//}
+
 
